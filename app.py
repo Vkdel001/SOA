@@ -216,9 +216,9 @@ def generate_statements():
         if not (allowed_file(master_file.filename) and allowed_file(summary_file.filename)):
             return jsonify({'error': 'Only Excel files (.xlsx, .xls) are allowed'}), 400
         
-        # Read Excel files
-        merchant_df = pd.read_excel(master_file)
-        summary_df = pd.read_excel(summary_file)
+        # Read Excel files using openpyxl engine for .xlsx files
+        merchant_df = pd.read_excel(master_file, engine='openpyxl')
+        summary_df = pd.read_excel(summary_file, engine='openpyxl')
         
         print("Master columns:", merchant_df.columns.tolist())
         print("Summary columns:", summary_df.columns.tolist())
