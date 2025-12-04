@@ -11,6 +11,16 @@ import os
 import io
 import zipfile
 from werkzeug.utils import secure_filename
+import sib_api_v3_sdk
+from sib_api_v3_sdk.rest import ApiException
+from dotenv import load_dotenv
+import base64
+
+# Load environment variables from .env file in current directory
+from pathlib import Path
+env_path = Path('.') / '.env'
+load_dotenv(dotenv_path=env_path, override=True)
+print(f"Loading .env from: {env_path.absolute()}")
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
@@ -21,10 +31,89 @@ app.config['OUTPUT_FOLDER'] = 'output'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
 
+# Brevo configuration
+BREVO_API_KEY = os.getenv('BREVO_API_KEY')
+SENDER_EMAIL = os.getenv('SENDER_EMAIL', 'noreply@zwennpay.online')
+SENDER_NAME = os.getenv('SENDER_NAME', 'ZwennPay')
+
+# Debug: Print API key status (first/last 4 chars only for security)
+if BREVO_API_KEY:
+    print(f"Brevo API Key loaded: {BREVO_API_KEY[:4]}...{BREVO_API_KEY[-4:]}")
+else:
+    print("WARNING: BREVO_API_KEY not found in environment!")
+
 ALLOWED_EXTENSIONS = {'xlsx', 'xls'}
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def send_email_with_attachment(recipient_email, recipient_name, pdf_path, start_date, end_date):
+    """Send email with PDF attachment using Brevo"""
+    if not BREVO_API_KEY:
+        print("Warning: BREVO_API_KEY not set, skipping email")
+        return False, "Brevo API key not configured"
+    
+    try:
+        # Configure Brevo API
+        configuration = sib_api_v3_sdk.Configuration()
+        configuration.api_key['api-key'] = BREVO_API_KEY
+        api_instance = sib_api_v3_sdk.TransactionalEmailsApi(sib_api_v3_sdk.ApiClient(configuration))
+        
+        # Read PDF file and encode to base64
+        with open(pdf_path, 'rb') as f:
+            pdf_content = base64.b64encode(f.read()).decode()
+        
+        # Email content
+        html_content = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+                <h2 style="color: #8b2f8b;">Statement of Account</h2>
+                <p>Dear {recipient_name},</p>
+                <p>Please find attached your Statement of Account for the period <strong>{start_date}</strong> to <strong>{end_date}</strong>.</p>
+                <p>This statement shows your transaction activity and settlement details for the specified period.</p>
+                <p>If you have any questions or concerns regarding this statement, please contact us.</p>
+                <br>
+                <p>Best regards,<br>
+                <strong>ZwennPay Team</strong><br>
+                Port Louis, Mauritius<br>
+                Email: info@zwennpay.online<br>
+                Phone: +230 260 17 51</p>
+                <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
+                <p style="font-size: 12px; color: #666;">
+                    This is an automated email. Please do not reply to this message.<br>
+                    This document is confidential and intended only for the account holder.
+                </p>
+            </div>
+        </body>
+        </html>
+        """
+        
+        # Prepare email
+        send_smtp_email = sib_api_v3_sdk.SendSmtpEmail(
+            to=[{"email": recipient_email, "name": recipient_name}],
+            sender={"email": SENDER_EMAIL, "name": SENDER_NAME},
+            subject=f"Statement of Account - {start_date} to {end_date}",
+            html_content=html_content,
+            attachment=[{
+                "content": pdf_content,
+                "name": os.path.basename(pdf_path)
+            }]
+        )
+        
+        # Send email
+        api_response = api_instance.send_transac_email(send_smtp_email)
+        print(f"Email sent to {recipient_email}: {api_response}")
+        return True, "Email sent successfully"
+        
+    except ApiException as e:
+        error_msg = f"Brevo API error: {str(e)}"
+        print(error_msg)
+        return False, error_msg
+    except Exception as e:
+        error_msg = f"Email error: {str(e)}"
+        print(error_msg)
+        return False, error_msg
 
 def generate_statement_pdf(merchant_info, summary_info, start_date, end_date, output_path):
     """Generate a single PDF statement"""
@@ -88,7 +177,7 @@ def generate_statement_pdf(merchant_info, summary_info, start_date, end_date, ou
     
     # Customer Details Box (without Customer ID)
     customer_data = [
-        ["Customer Name:", merchant_info.get('Merchant_Name', 'N/A')],
+        ["Customer Name:", f"{merchant_info.get('Trade_name', 'N/A')} - {merchant_info.get('Merchant_name', 'N/A')}"],
         ["Address:", merchant_info.get('Address', 'N/A')],
         ["Contact:", f"{merchant_info.get('Contact', 'N/A')} | {merchant_info.get('Email', 'N/A')}"]
     ]
@@ -195,6 +284,42 @@ def generate_statement_pdf(merchant_info, summary_info, start_date, end_date, ou
 def index():
     return render_template('index.html')
 
+@app.route('/test-brevo')
+def test_brevo():
+    """Test Brevo API connection"""
+    if not BREVO_API_KEY:
+        return jsonify({
+            'error': 'API key not configured',
+            'key_loaded': False
+        }), 500
+    
+    try:
+        configuration = sib_api_v3_sdk.Configuration()
+        configuration.api_key['api-key'] = BREVO_API_KEY
+        api_instance = sib_api_v3_sdk.AccountApi(sib_api_v3_sdk.ApiClient(configuration))
+        account_info = api_instance.get_account()
+        return jsonify({
+            'status': 'success',
+            'email': account_info.email,
+            'company': account_info.company_name,
+            'key_preview': f"{BREVO_API_KEY[:10]}...{BREVO_API_KEY[-4:]}"
+        })
+    except ApiException as e:
+        return jsonify({
+            'error': 'Brevo API Error',
+            'status_code': e.status,
+            'reason': e.reason,
+            'body': e.body,
+            'key_preview': f"{BREVO_API_KEY[:10]}...{BREVO_API_KEY[-4:]}" if BREVO_API_KEY else None
+        }), 500
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'error': str(e),
+            'type': type(e).__name__,
+            'traceback': traceback.format_exc()
+        }), 500
+
 @app.route('/generate', methods=['POST'])
 def generate_statements():
     try:
@@ -206,6 +331,7 @@ def generate_statements():
         summary_file = request.files['summary_file']
         start_date = request.form.get('start_date')
         end_date = request.form.get('end_date')
+        send_emails = request.form.get('send_emails') == 'true'
         
         if not start_date or not end_date:
             return jsonify({'error': 'Please provide start and end dates'}), 400
@@ -233,6 +359,7 @@ def generate_statements():
         # Generate PDFs for each row in summary
         generated_files = []
         errors = []
+        email_results = []
         
         print(f"Processing {len(summary_df)} records from summary file")
         
@@ -241,20 +368,26 @@ def generate_statements():
                 trade_name = str(row['TradeName']).strip()
                 merchant = str(row['Merchant']).strip()
                 
-                print(f"Processing: {trade_name}")
+                print(f"Processing: {trade_name} - {merchant}")
                 
-                # Match TradeName from summary with Merchant_Name from master
-                merchant_info = merchant_df[merchant_df['Merchant_Name'].str.strip() == trade_name]
+                # Match both TradeName AND Merchant from summary with Trade_name AND Merchant_name from master
+                merchant_info = merchant_df[
+                    (merchant_df['Trade_name'].str.strip() == trade_name) & 
+                    (merchant_df['Merchant_name'].str.strip() == merchant)
+                ]
                 
                 if merchant_info.empty:
-                    errors.append(f"TradeName '{trade_name}' not found in master file")
-                    print(f"Warning: {trade_name} not in master file")
+                    errors.append(f"'{trade_name} - {merchant}' not found in master file")
+                    print(f"Warning: {trade_name} - {merchant} not in master file")
                     continue
                 
                 merchant_info = merchant_info.iloc[0].to_dict()
                 summary_info = row.to_dict()
                 
-                filename = f"SOA_{trade_name.replace(' ', '_').replace('/', '_')}_{start_date.replace(' ', '_')}_{end_date.replace(' ', '_')}.pdf"
+                # Use both trade_name and merchant for unique filename
+                safe_trade_name = trade_name.replace(' ', '_').replace('/', '_')
+                safe_merchant = merchant.replace(' ', '_').replace('/', '_')
+                filename = f"SOA_{safe_trade_name}_{safe_merchant}_{start_date.replace(' ', '_')}_{end_date.replace(' ', '_')}.pdf"
                 output_path = os.path.join(app.config['OUTPUT_FOLDER'], filename)
                 
                 print(f"Generating PDF: {filename}")
@@ -263,6 +396,25 @@ def generate_statements():
                 if os.path.exists(output_path):
                     generated_files.append(filename)
                     print(f"Successfully created: {filename}")
+                    
+                    # Send email if requested
+                    if send_emails:
+                        recipient_email = merchant_info.get('Email', '').strip()
+                        if recipient_email and '@' in recipient_email:
+                            merchant_display_name = f"{trade_name} - {merchant}"
+                            success, message = send_email_with_attachment(
+                                recipient_email,
+                                merchant_display_name,
+                                output_path,
+                                start_date,
+                                end_date
+                            )
+                            if success:
+                                email_results.append(f"✓ {merchant_display_name}: Email sent to {recipient_email}")
+                            else:
+                                email_results.append(f"✗ {merchant_display_name}: {message}")
+                        else:
+                            email_results.append(f"✗ {trade_name} - {merchant}: No valid email address")
                 else:
                     errors.append(f"Failed to create PDF for {trade_name}")
                     
@@ -290,12 +442,21 @@ def generate_statements():
         
         print(f"ZIP file size: {len(zip_buffer.getvalue())} bytes")
         
-        return send_file(
+        # Prepare response with email results
+        response = send_file(
             zip_buffer,
             mimetype='application/zip',
             as_attachment=True,
             download_name=f'Statements_{start_date.replace(" ", "_")}_{end_date.replace(" ", "_")}.zip'
         )
+        
+        # Add email results as header (for logging)
+        if email_results:
+            print("\n=== Email Results ===")
+            for result in email_results:
+                print(result)
+        
+        return response
     
     except Exception as e:
         import traceback

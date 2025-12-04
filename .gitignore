@@ -45,6 +45,9 @@ Statements/*
 # PDF files
 *.pdf
 
+# Environment variables
+.env
+
 # IDE
 .vscode/
 .idea/

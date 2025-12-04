@@ -29,7 +29,7 @@ Open your browser and go to: `http://localhost:5000`
 ## File Requirements
 
 ### Merchant Master File (Email_master.xlsx)
-Columns: Merchant_Name, Email, Address, Contact
+Columns: Trade_name, Merchant_name, Email, Address, Contact
 
 ### Summary File (summary.xlsx)
 Columns: TradeName, Merchant, MerchantBankAccountNo, Total TransactionAmount, Total TransactionCharges, Total TransactionTax, Total SettledAmount

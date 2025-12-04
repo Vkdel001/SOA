@@ -60,7 +60,7 @@ mkdir -p uploads output static
 pip3 install gunicorn
 
 # Test the application
-python3 app.py
+    python3 app.py
 ```
 
 ### Set up as a System Service:
